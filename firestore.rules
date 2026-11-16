@@ -9,13 +9,14 @@ service cloud.firestore {
     function isMember() { return signedIn() && exists(accessPath()); }
     function myRole() { return get(accessPath()).data.role; }
     function isAdmin() { return isMember() && myRole() == 'admin'; }
-    function canOperate() { return isMember() && (myRole() == 'admin' || myRole() == 'caller'); }
+    function canOperate() { return isMember() && myRole() in ['admin', 'manager', 'caller']; }
     // Only true during first-time setup, before the admin account exists.
     function booting() { return signedIn() && !exists(/databases/$(database)/documents/config/bootstrap); }
 
-    // Names shown on the sign-in screen (no data about calls).
+    // One entry per person: name, role, sign-in ID. Looked up by name at sign-in; never listed publicly.
     match /directory/{slug} {
-      allow read: if true;
+      allow get: if true;          // look up one name at sign-in
+      allow list: if isAdmin();    // only the admin can see the whole team
       allow create, delete: if isAdmin() || booting();
       allow update: if isAdmin() || booting()
         || (signedIn() && request.auth.token.email == resource.data.email
@@ -33,7 +34,7 @@ service cloud.firestore {
       allow write: if booting();
     }
 
-    // Live board: everyone signed in can see it; calling agents + admin can change it.
+    // Live board: everyone signed in can see it; calling agents, managers + admin can change it.
     match /meta/{d} {
       allow read: if isMember();
       allow write: if canOperate() || booting();
