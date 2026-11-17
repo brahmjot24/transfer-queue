@@ -48,8 +48,9 @@ service cloud.firestore {
       allow read: if isMember();
       allow write: if canOperate() || booting();
     }
+    // Activity log: calling agents, managers + admins only. Mortgage agents only see their own turn.
     match /logs/{d} {
-      allow read: if isMember();
+      allow read: if canOperate();
       allow write: if canOperate();
     }
 
