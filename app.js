@@ -267,6 +267,27 @@ function doAddSpot() {
     toast("Extra spot for " + names.join(", ") + " added to " + lists.join(", "));
   });
 }
+function extrasToday(name) { let n = 0; CALLERS.forEach(c => entries(c).forEach(e => { if (e.extra && e.name === name) n++; })); return n; }
+function doRemoveSpots(all) {
+  const names = all ? roster().filter(n => extrasToday(n) > 0) : spotPicked();
+  const lists = all ? CALLERS.slice() : CALLERS.filter(c => S.form["spot_" + c] !== false);
+  if (!names.length) { toast(all ? "No extra spots on today's lists" : "Tick at least one agent"); return; }
+  if (!lists.length) { toast("Pick at least one list"); return; }
+  const pick = new Set(names);
+  let total = 0; lists.forEach(c => entries(c).forEach(e => { if (e.extra && pick.has(e.name)) total++; }));
+  if (!total) { toast("None of those agents has an extra spot on " + lists.join(", ") + " today"); return; }
+  const run = () => guard(async () => {
+    for (const c of lists) {
+      const list = entries(c), keep = list.filter(e => !(e.extra && pick.has(e.name)));
+      if (keep.length !== list.length) await writeList(c, keep, { entries: list, label: "Remove extra spots", events: [] });
+    }
+    await logEvent({ type: "admin", name: names.join(", "), note: "extra spots removed from " + lists.join(", ") });
+    S.form.spotPick = {}; toast("Removed " + total + " extra spot" + (total === 1 ? "" : "s"));
+  });
+  S.modal = { title: "Remove " + total + " extra spot" + (total === 1 ? "" : "s") + "?", ok: "Remove", okCls: "dark", run,
+    html: "<p>Takes away today's extra spots for <b>" + names.map(esc).join(", ") + "</b> on " + lists.join(", ") + ". Their regular spot stays where it is.</p><p class='muted'>Standing extra spots (set in the table below) will still be added at the next shuffle.</p>" };
+  render();
+}
 function doExtra(name, delta) {
   const cur = ((S.meta.extras || {})[name]) || 0, v = Math.max(0, Math.min(3, cur + delta)); if (v === cur) return;
   guard(async () => { await db.merge("meta/board", { extras: { [name]: v } }); });
@@ -584,11 +605,11 @@ function teamView() {
   const agentRows = dirList("agent").map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td><label class="switch"><input type="checkbox" data-act="off" data-name="' + esc(d.name) + '" ' + (off[d.name] ? "" : "checked") + dis + '><i></i></label> <span class="sub">' + (off[d.name] ? "Off today" : "Working") + '</span></td><td><span class="stepper"><button class="btn xs" data-act="extra" data-name="' + esc(d.name) + '" data-d="-1"' + dis + '>−</button><span>' + (ex[d.name] || 0) + '</span><button class="btn xs" data-act="extra" data-name="' + esc(d.name) + '" data-d="1"' + dis + '>+</button></span></td><td>' + pinCell(d) + '</td><td style="text-align:right"><button class="btn xs ghost" data-act="rmperson" data-slug="' + slugOf(d) + '"' + dis + '>Remove</button></td></tr>').join("");
   const staffRows = dirList("admin").concat(dirList("manager"), dirList("caller")).map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td class="sub">' + ROLE_LABEL[d.role] + (d.list ? " · " + esc(d.list) + "'s list" : "") + '</td><td>' + pinCell(d) + '</td><td style="text-align:right">' + (d.role !== "admin" ? '<button class="btn xs ghost" data-act="rmperson" data-slug="' + slugOf(d) + '"' + dis + '>Remove</button>' : "") + '</td></tr>').join("");
   const addSpot = '<div class="card mb"><div class="card-h"><h3>Give extra spots today</h3><span class="sub">one-time, for today\'s lists only — e.g. to make up for time off</span></div><div class="card-b"><div class="inline">' +
-    '<div class="field" style="flex-basis:100%">Mortgage agents <span class="sub" style="font-weight:500">(tick one or more)</span><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px 12px;padding:6px 0">' + roster().map(n => '<label style="font-weight:600;color:var(--ink);display:flex;gap:6px;align-items:center"><input type="checkbox" data-spotpick="' + esc(n) + '" ' + ((S.form.spotPick || {})[n] ? "checked" : "") + '> ' + esc(n) + '</label>').join("") + '</div><div style="display:flex;gap:8px"><button class="btn xs" data-act="spotall">Select all</button><button class="btn xs ghost" data-act="spotnone">Clear</button><span class="sub" style="align-self:center">' + spotPicked().length + ' selected</span></div></div>' +
+    '<div class="field" style="flex-basis:100%">Mortgage agents <span class="sub" style="font-weight:500">(tick one or more)</span><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px 12px;padding:6px 0">' + roster().map(n => '<label style="font-weight:600;color:var(--ink);display:flex;gap:6px;align-items:center"><input type="checkbox" data-spotpick="' + esc(n) + '" ' + ((S.form.spotPick || {})[n] ? "checked" : "") + '> ' + esc(n) + (extrasToday(n) ? ' <span class="tag x">+' + extrasToday(n) + '</span>' : '') + '</label>').join("") + '</div><div style="display:flex;gap:8px"><button class="btn xs" data-act="spotall">Select all</button><button class="btn xs ghost" data-act="spotnone">Clear</button><span class="sub" style="align-self:center">' + spotPicked().length + ' selected</span></div></div>' +
     '<label class="field">Where<select class="inp" id="f-spotPos" data-f="spotPos">' + [["random", "Random spot"], ["top", "Top (next up)"], ["bottom", "Bottom"]].map(o => '<option value="' + o[0] + '" ' + ((f.spotPos || "random") === o[0] ? "selected" : "") + '>' + o[1] + '</option>').join("") + '</select></label>' +
     '<div class="field">Lists<div style="display:flex;gap:10px;padding:8px 0">' + CALLERS.map(c => '<label style="font-weight:600;color:var(--ink)"><input type="checkbox" data-f="spot_' + c + '" ' + (f["spot_" + c] === false ? "" : "checked") + '> ' + c + '</label>').join("") + '</div></div>' +
-    '<button class="btn dark" data-act="addspot"' + dis + '>Add extra spot' + (spotPicked().length > 1 ? "s" : "") + '</button></div></div></div>';
-  const team = '<div class="card mb"><div class="card-h"><h3>Mortgage agents</h3><span class="sub">' + dirList("agent").length + ' on the team</span></div><div style="overflow:auto"><table><thead><tr><th>Name</th><th>Today</th><th>Standing extra spots <span title="Every morning\'s shuffle gives this person this many extra places on every list, until you set it back to 0">ⓘ</span></th><th>Sign-in</th><th></th></tr></thead><tbody>' + agentRows + '</tbody></table></div>' +
+    '<button class="btn dark" data-act="addspot"' + dis + '>Add extra spot' + (spotPicked().length > 1 ? "s" : "") + '</button><button class="btn redo" data-act="rmspots"' + dis + '>Remove their extra spots</button>' + (roster().some(n => extrasToday(n) > 0) ? '<button class="btn ghost sm" data-act="rmspotsall"' + dis + '>Remove all extra spots today</button>' : '') + '</div></div></div>';
+  const team = '<div class="card mb"><div class="card-h"><h3>Mortgage agents</h3><span class="sub">' + dirList("agent").length + ' on the team · <b>Standing extra spots</b> = added to every list at every shuffle, until set back to 0</span></div><div style="overflow:auto"><table><thead><tr><th>Name</th><th>Today</th><th>Standing extra spots <span title="Every morning\'s shuffle gives this person this many extra places on every list, until you set it back to 0">ⓘ</span></th><th>Sign-in</th><th></th></tr></thead><tbody>' + agentRows + '</tbody></table></div>' +
     '</div>';
   const auto = S.meta && S.meta.autoShuffle !== false;
   const addCard = '<div class="card mb"><div class="card-h"><h3>Add someone new</h3></div><div class="card-b"><div style="display:flex;flex-direction:column;gap:10px">' +
@@ -687,6 +708,8 @@ document.addEventListener("click", ev => {
     case "addspot": doAddSpot(); return;
     case "spotall": S.form.spotPick = {}; roster().forEach(n => S.form.spotPick[n] = true); render(); return;
     case "spotnone": S.form.spotPick = {}; render(); return;
+    case "rmspots": doRemoveSpots(false); return;
+    case "rmspotsall": doRemoveSpots(true); return;
     case "addperson": doAddPerson(); return;
     case "rmperson": doRemovePerson(slug); return;
     case "extra": doExtra(name, Number(b.dataset.d)); return;
