@@ -245,20 +245,26 @@ function doRemoveEntry(c, id) {
     run: () => guard(async () => { await writeList(c, list.filter(x => x.id !== id), { entries: list, label: "Remove " + e.name, events: [] }); await logEvent({ type: "admin", caller: c, name: e.name, note: "spot removed" }); })
   }; render();
 }
+function spotPicked() { const m = S.form.spotPick || {}; return roster().filter(n => m[n]); }
 function doAddSpot() {
-  const name = S.form.spotName, where = S.form.spotPos || "random", lists = CALLERS.filter(c => S.form["spot_" + c] !== false);
-  if (!name) { toast("Pick an agent first"); return; } if (!lists.length) { toast("Pick at least one list"); return; }
+  const names = spotPicked(), where = S.form.spotPos || "random", lists = CALLERS.filter(c => S.form["spot_" + c] !== false);
+  if (!names.length) { toast("Tick at least one agent"); return; } if (!lists.length) { toast("Pick at least one list"); return; }
+  const who = names.length === 1 ? names[0] : names.length + " agents";
   guard(async () => {
     for (const c of lists) {
-      const list = entries(c).slice(), e = { id: rid(), name, extra: true };
-      if (where === "top") list.unshift(e); else if (where === "bottom") list.push(e); else {
-        let k = 0; for (let t = 0; t < 40; t++) { k = rand(list.length + 1); const a = list[k - 1], b = list[k]; if ((!a || a.name !== name) && (!b || b.name !== name)) break; }
+      let list = entries(c).slice();
+      const adds = shuffleArr(names).map(name => ({ id: rid(), name, extra: true })); // random order among them, so nobody is always first
+      if (where === "top") list = adds.concat(list);
+      else if (where === "bottom") list = list.concat(adds);
+      else adds.forEach(e => {
+        let k = 0; for (let t = 0; t < 40; t++) { k = rand(list.length + 1); const a = list[k - 1], b = list[k]; if ((!a || a.name !== e.name) && (!b || b.name !== e.name)) break; }
         list.splice(k, 0, e);
-      }
-      await writeList(c, list, { entries: entries(c), label: "Extra spot " + name, events: [] });
+      });
+      await writeList(c, list, { entries: entries(c), label: "Extra spot" + (names.length > 1 ? "s" : "") + " " + who, events: [] });
     }
-    await logEvent({ type: "admin", name, note: "extra spot added (" + where + ") on " + lists.join(", ") });
-    toast("Extra spot for " + name + " added to " + lists.join(", "));
+    await logEvent({ type: "admin", name: names.join(", "), note: "extra spot added (" + where + ") on " + lists.join(", ") });
+    S.form.spotPick = {};
+    toast("Extra spot for " + names.join(", ") + " added to " + lists.join(", "));
   });
 }
 function doExtra(name, delta) {
@@ -577,12 +583,12 @@ function teamView() {
   const pinCell = d => (d.pinSet ? '<span class="tag g">PIN set</span>' : '<span class="tag o">Not signed in yet</span>') + (d.name !== S.me.name ? ' <button class="btn xs ghost" data-act="resetpin" data-slug="' + slugOf(d) + '"' + dis + '>Reset PIN</button>' : "");
   const agentRows = dirList("agent").map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td><label class="switch"><input type="checkbox" data-act="off" data-name="' + esc(d.name) + '" ' + (off[d.name] ? "" : "checked") + dis + '><i></i></label> <span class="sub">' + (off[d.name] ? "Off today" : "Working") + '</span></td><td><span class="stepper"><button class="btn xs" data-act="extra" data-name="' + esc(d.name) + '" data-d="-1"' + dis + '>−</button><span>' + (ex[d.name] || 0) + '</span><button class="btn xs" data-act="extra" data-name="' + esc(d.name) + '" data-d="1"' + dis + '>+</button></span></td><td>' + pinCell(d) + '</td><td style="text-align:right"><button class="btn xs ghost" data-act="rmperson" data-slug="' + slugOf(d) + '"' + dis + '>Remove</button></td></tr>').join("");
   const staffRows = dirList("admin").concat(dirList("manager"), dirList("caller")).map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td class="sub">' + ROLE_LABEL[d.role] + (d.list ? " · " + esc(d.list) + "'s list" : "") + '</td><td>' + pinCell(d) + '</td><td style="text-align:right">' + (d.role !== "admin" ? '<button class="btn xs ghost" data-act="rmperson" data-slug="' + slugOf(d) + '"' + dis + '>Remove</button>' : "") + '</td></tr>').join("");
-  const addSpot = '<div class="card mb"><div class="card-h"><h3>Give someone an extra spot today</h3><span class="sub">e.g. to make up for time off</span></div><div class="card-b"><div class="inline">' +
-    '<label class="field">Mortgage agent<select class="inp" id="f-spotName" data-f="spotName"><option value="">Choose…</option>' + roster().map(n => '<option ' + (f.spotName === n ? "selected" : "") + '>' + esc(n) + '</option>').join("") + '</select></label>' +
+  const addSpot = '<div class="card mb"><div class="card-h"><h3>Give extra spots today</h3><span class="sub">one-time, for today\'s lists only — e.g. to make up for time off</span></div><div class="card-b"><div class="inline">' +
+    '<div class="field" style="flex-basis:100%">Mortgage agents <span class="sub" style="font-weight:500">(tick one or more)</span><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px 12px;padding:6px 0">' + roster().map(n => '<label style="font-weight:600;color:var(--ink);display:flex;gap:6px;align-items:center"><input type="checkbox" data-spotpick="' + esc(n) + '" ' + ((S.form.spotPick || {})[n] ? "checked" : "") + '> ' + esc(n) + '</label>').join("") + '</div><div style="display:flex;gap:8px"><button class="btn xs" data-act="spotall">Select all</button><button class="btn xs ghost" data-act="spotnone">Clear</button><span class="sub" style="align-self:center">' + spotPicked().length + ' selected</span></div></div>' +
     '<label class="field">Where<select class="inp" id="f-spotPos" data-f="spotPos">' + [["random", "Random spot"], ["top", "Top (next up)"], ["bottom", "Bottom"]].map(o => '<option value="' + o[0] + '" ' + ((f.spotPos || "random") === o[0] ? "selected" : "") + '>' + o[1] + '</option>').join("") + '</select></label>' +
     '<div class="field">Lists<div style="display:flex;gap:10px;padding:8px 0">' + CALLERS.map(c => '<label style="font-weight:600;color:var(--ink)"><input type="checkbox" data-f="spot_' + c + '" ' + (f["spot_" + c] === false ? "" : "checked") + '> ' + c + '</label>').join("") + '</div></div>' +
-    '<button class="btn dark" data-act="addspot"' + dis + '>Add extra spot</button></div></div></div>';
-  const team = '<div class="card mb"><div class="card-h"><h3>Mortgage agents</h3><span class="sub">' + dirList("agent").length + ' on the team</span></div><div style="overflow:auto"><table><thead><tr><th>Name</th><th>Today</th><th>Standing extra spots <span title="Added at every shuffle until set back to 0">ⓘ</span></th><th>Sign-in</th><th></th></tr></thead><tbody>' + agentRows + '</tbody></table></div>' +
+    '<button class="btn dark" data-act="addspot"' + dis + '>Add extra spot' + (spotPicked().length > 1 ? "s" : "") + '</button></div></div></div>';
+  const team = '<div class="card mb"><div class="card-h"><h3>Mortgage agents</h3><span class="sub">' + dirList("agent").length + ' on the team</span></div><div style="overflow:auto"><table><thead><tr><th>Name</th><th>Today</th><th>Standing extra spots <span title="Every morning\'s shuffle gives this person this many extra places on every list, until you set it back to 0">ⓘ</span></th><th>Sign-in</th><th></th></tr></thead><tbody>' + agentRows + '</tbody></table></div>' +
     '</div>';
   const auto = S.meta && S.meta.autoShuffle !== false;
   const addCard = '<div class="card mb"><div class="card-h"><h3>Add someone new</h3></div><div class="card-b"><div style="display:flex;flex-direction:column;gap:10px">' +
@@ -679,6 +685,8 @@ document.addEventListener("click", ev => {
     case "shuffle": askShuffle(); return;
     case "tab": S.tab = b.dataset.t; render(); return;
     case "addspot": doAddSpot(); return;
+    case "spotall": S.form.spotPick = {}; roster().forEach(n => S.form.spotPick[n] = true); render(); return;
+    case "spotnone": S.form.spotPick = {}; render(); return;
     case "addperson": doAddPerson(); return;
     case "rmperson": doRemovePerson(slug); return;
     case "extra": doExtra(name, Number(b.dataset.d)); return;
@@ -688,6 +696,7 @@ document.addEventListener("click", ev => {
 document.addEventListener("change", ev => {
   const t = ev.target;
   if (t.dataset.pref) { const p = prefs(); p[t.dataset.pref] = t.checked; ls.set(prefKey(), p); if (t.dataset.pref === "chime" && t.checked) chime("next"); render(); return; }
+  if (t.dataset.spotpick != null) { S.form.spotPick = Object.assign({}, S.form.spotPick || {}, { [t.dataset.spotpick]: t.checked }); render(); return; }
   if (t.dataset.f) { S.form[t.dataset.f] = t.type === "checkbox" ? t.checked : t.value; return; }
   if (t.dataset.act === "off") { doOff(t.dataset.name); return; }
   if (t.dataset.act === "autoshuffle") { const v = t.checked; guard(async () => { await db.merge("meta/board", { autoShuffle: v }); }); }
