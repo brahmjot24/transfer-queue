@@ -6,7 +6,8 @@ let CALLERS = DEFAULT_CALLERS.slice(); // live list of calling-agent lists, kept
 // The starting team, used once: the very first time anyone signs in, the app creates
 // these people. Everyone signs in by typing exactly this first + last name.
 const TEAM = [
-  { name: "Jon Salvagna", role: "admin" },
+  { name: "Jon Salvagna", role: "admin", title: "Managing Director" },
+  { name: "Andre Deleo", role: "admin", title: "Principal Broker", ensure: true },
   { name: "Chantelle Ferreira", role: "manager" },
   { name: "Delcia Salvagna", role: "manager" },
   { name: "Arjon Fernandez", role: "caller", list: "Arjon" },
@@ -17,7 +18,7 @@ const TEAM = [
   { name: "Jon Amello", role: "agent" }, { name: "Krisha Karuna", role: "agent" }, { name: "Paulina Soria", role: "agent" },
   { name: "Tom Coukos", role: "agent" }, { name: "Warren Mutai", role: "agent" }
 ];
-const ADMIN = TEAM.find(p => p.role === "admin").name;
+const ADMIN = "Jon Salvagna or Andre Deleo";
 const SEED_AGENTS = TEAM.filter(p => p.role === "agent").map(p => p.name);
 const TZ = "America/Toronto";
 const PIN_LEN = 6;
@@ -75,7 +76,11 @@ function fireAlert(kind, caller) {
 const isAdmin = () => S.me && S.me.role === "admin";
 const myList = () => S.me && (S.me.list || S.me.name);
 const isManager = () => S.me && S.me.role === "manager";
-const ROLE_LABEL = { admin: "Managing Director", manager: "Manager", caller: "Calling agent", agent: "Mortgage agent" };
+const ROLE_LABEL = { admin: "Admin", manager: "Manager", caller: "Calling agent", agent: "Mortgage agent" };
+const TITLES = { "jon-salvagna": "Managing Director", "andre-deleo": "Principal Broker" };
+const titleOf = d => (d && (d.title || TITLES[d.slug] || TITLES[slugify(d.name || "")])) || ROLE_LABEL[d && d.role] || "";
+// Who may reset whose PIN: admins reset anyone but themselves; managers reset calling + mortgage agents.
+const canResetPin = d => !!(S.me && d && d.name !== S.me.name && (isAdmin() || (isManager() && (d.role === "caller" || d.role === "agent"))));
 const offMap = () => (S.meta && S.meta.off) || {};
 const entries = c => (S.lists[c] && S.lists[c].entries) || [];
 const activeOrder = c => { const off = offMap(); return entries(c).filter(e => !off[e.name]); };
@@ -138,20 +143,55 @@ function ensureLogs() {
 }
 
 /* ---------- shuffle ---------- */
+const MIN_GAP = 4; // a person's spots on two different calling lists should be at least this far apart
+function spacingReport(L, cl) {
+  // For every person and every pair of lists: the distance between their spots (closest copies if they have extras).
+  const pos = {}; cl.forEach(c => (L[c] || []).forEach((n, i) => { ((pos[n] = pos[n] || {})[c] = pos[n][c] || []).push(i); }));
+  let pairs = 0, close = 0, worst = 99; const closeList = [];
+  Object.keys(pos).forEach(n => {
+    for (let a = 0; a < cl.length; a++) for (let b = a + 1; b < cl.length; b++) {
+      const A = pos[n][cl[a]], B = pos[n][cl[b]]; if (!A || !B) continue;
+      let d = 99; A.forEach(x => B.forEach(y => { d = Math.min(d, Math.abs(x - y)); }));
+      pairs++; worst = Math.min(worst, d); if (d < MIN_GAP) { close++; closeList.push(n + " (" + cl[a] + "/" + cl[b] + ": " + d + " apart)"); }
+    }
+  });
+  return { pairs, close, worst: worst === 99 ? 0 : worst, closeList };
+}
 function buildLists(rost, extras, prevStart, CALLERS) {
   const base = []; rost.forEach(n => { base.push(n); for (let i = 0; i < (extras[n] || 0); i++) base.push(n); });
-  const prevFirsts = new Set(prevStart ? CALLERS.map(c => prevStart[c] && prevStart[c][0]).filter(Boolean) : []);
+  const cl = CALLERS, N = base.length;
+  if (!N) { const L = {}; cl.forEach(c => L[c] = []); return L; }
+  const prevFirsts = new Set(prevStart ? cl.map(c => prevStart[c] && prevStart[c][0]).filter(Boolean) : []);
+  const cost = L => {
+    let sc = 0;
+    // spacing between lists matters most: each missing step costs a lot
+    const pos = {}; cl.forEach(c => L[c].forEach((n, i) => { ((pos[n] = pos[n] || {})[c] = pos[n][c] || []).push(i); }));
+    Object.keys(pos).forEach(n => { for (let a = 0; a < cl.length; a++) for (let b = a + 1; b < cl.length; b++) {
+      const A = pos[n][cl[a]], B = pos[n][cl[b]]; if (!A || !B) continue;
+      let d = 99; A.forEach(x => B.forEach(y => { d = Math.min(d, Math.abs(x - y)); }));
+      if (d < MIN_GAP) sc += 100 * (MIN_GAP - d) * (MIN_GAP - d);
+    } });
+    cl.forEach(c => { const l = L[c], p = prevStart && prevStart[c];
+      if (p) l.forEach((n, i) => { if (p[i] === n) sc += 3; });        // avoid same spot as last time
+      for (let i = 1; i < l.length; i++) if (l[i] === l[i - 1]) sc += 60; // never back-to-back on one list
+      if (prevFirsts.has(l[0])) sc += 4; });                            // don't give #1 to yesterday's #1s
+    const f = cl.map(c => L[c][0]); sc += (f.length - new Set(f).size) * 50;
+    return sc;
+  };
   let best = null, bs = Infinity;
-  for (let k = 0; k < 600; k++) {
-    const L = {}; let sc = 0;
-    CALLERS.forEach(c => {
-      const l = shuffleArr(base); L[c] = l; const p = prevStart && prevStart[c];
-      if (p) l.forEach((n, i) => { if (p[i] === n) sc += 3; });
-      for (let i = 1; i < l.length; i++) if (l[i] === l[i - 1]) sc += 6;
-      if (prevFirsts.has(l[0])) sc += 4;
-    });
-    const f = CALLERS.map(c => L[c][0]); sc += (f.length - new Set(f).size) * 5;
-    if (sc < bs) { bs = sc; best = L; } if (sc === 0) break;
+  for (let restart = 0; restart < 6; restart++) {
+    const L = {}; cl.forEach(c => L[c] = shuffleArr(base)); // fully random start keeps it fair
+    let cur = cost(L), T = 60;
+    for (let step = 0; step < 15000 && cur > 0; step++) {
+      const c = cl[rand(cl.length)], a = rand(N), b = rand(N); if (a === b) continue;
+      const l = L[c]; [l[a], l[b]] = [l[b], l[a]];
+      const v = cost(L);
+      // simulated annealing: sometimes accept a slightly worse order early on, to escape dead ends
+      if (v <= cur || Math.random() < Math.exp((cur - v) / T)) cur = v; else [l[a], l[b]] = [l[b], l[a]];
+      if (cur < bs) { bs = cur; best = {}; cl.forEach(cc => best[cc] = L[cc].slice()); }
+      T = Math.max(0.5, T * 0.9995);
+    }
+    if (bs === 0) break;
   }
   return best;
 }
@@ -288,6 +328,7 @@ function doRemoveSpots(all) {
     html: "<p>Takes away today's extra spots for <b>" + names.map(esc).join(", ") + "</b> on " + lists.join(", ") + ". Their regular spot stays where it is.</p><p class='muted'>Standing extra spots (set in the table below) will still be added at the next shuffle.</p>" };
   render();
 }
+function startLists() { const L = {}; CALLERS.forEach(c => L[c] = entries(c).map(e => e.name)); return L; }
 function doExtra(name, delta) {
   const cur = ((S.meta.extras || {})[name]) || 0, v = Math.max(0, Math.min(3, cur + delta)); if (v === cur) return;
   guard(async () => { await db.merge("meta/board", { extras: { [name]: v } }); });
@@ -297,11 +338,24 @@ function askShuffle() {
   S.modal = {
     title: re ? "Reshuffle today's lists?" : "Shuffle today's lists?", ok: re ? "Reshuffle now" : "Shuffle now", okCls: "green",
     html: "<p>Each calling agent gets a <b>different random order</b> of the " + roster().length + " mortgage agents" + (Object.values((S.meta && S.meta.extras) || {}).some(v => v > 0) ? " (plus standing extra spots)" : "") + ". The app avoids giving anyone the same position they had last time.</p>" + (re ? "<p><b>Heads up:</b> this resets today's order for every calling agent. Today's activity is kept.</p>" : ""),
-    run: () => guard(async () => { await doShuffle(S.me.name, false); toast("Lists shuffled for " + fmtDate(today())); })
+    run: () => guard(async () => { await doShuffle(S.me.name, false); const r = spacingReport(startLists(), CALLERS); toast("Lists shuffled. " + (r.close ? r.close + " of " + r.pairs + " spots are only " + r.worst + " apart — the rest are " + MIN_GAP + "+ apart." : "Everyone is " + MIN_GAP + "+ spots apart across lists.")); })
   }; render();
 }
 
 /* ---------- team (admin) ---------- */
+let ensuring = false;
+async function ensureTeam() {
+  if (ensuring || !S.dirLoaded) return;
+  const missing = TEAM.filter(p => p.ensure && !S.dir[slugify(p.name)]); if (!missing.length) return;
+  ensuring = true;
+  try {
+    const ops = [];
+    missing.forEach(p => { const slug = slugify(p.name), email = emailFor(slug, 1), extra = p.title ? { title: p.title } : {};
+      ops.push({ op: "set", path: "directory/" + slug, data: Object.assign({ name: p.name, role: p.role, ver: 1, email, pinSet: false }, extra) });
+      ops.push({ op: "set", path: "access/" + email, data: Object.assign({ slug, name: p.name, role: p.role }, extra) }); });
+    await db.batch(ops);
+  } catch (e) { console.warn(e); } finally { ensuring = false; }
+}
 function doAddPerson() {
   const name = nice(S.form.newName || ""), role = S.form.newRole || "agent";
   if (!/\S+\s+\S+/.test(name)) { toast("Type a first and last name"); return; }
@@ -347,7 +401,7 @@ function doRemovePerson(slug) {
   }; render();
 }
 function doResetPin(slug) {
-  const d = S.dir[slug]; if (!d) return;
+  const d = S.dir[slug]; if (!d || !canResetPin(d)) return;
   S.modal = {
     title: "Reset " + d.name + "'s PIN?", ok: "Reset PIN", okCls: "dark",
     html: "<p>" + esc(d.name) + " will be signed out on every device and asked to create a new PIN the next time they pick their name.</p>",
@@ -402,7 +456,7 @@ async function runSetup(P, pin) {
     const ops = [];
     TEAM.forEach(p => {
       const slug = slugify(p.name), email = emailFor(slug, 1);
-      const extra = p.list ? { list: p.list } : {};
+      const extra = Object.assign(p.list ? { list: p.list } : {}, p.title ? { title: p.title } : {});
       ops.push({ op: "set", path: "directory/" + slug, data: Object.assign({ name: p.name, role: p.role, ver: 1, email, pinSet: slug === P.slug }, extra) });
       ops.push({ op: "set", path: "access/" + email, data: Object.assign({ slug, name: p.name, role: p.role }, extra) });
     });
@@ -462,7 +516,7 @@ function startMemberSubs() {
     clearTimeout(timer); S.stale = false; S.meta = s.exists ? s.data : null; CALLERS = (S.meta && S.meta.callers && S.meta.callers.length) ? S.meta.callers.slice() : DEFAULT_CALLERS.slice(); ensureLogs(); render(); checkAlerts(); maybeAutoShuffle();
   }, fail));
   memberSubs.push(db.listenColl("lists", q => { S.lists = {}; q.docs.forEach(d => S.lists[d.id] = d.data); S.listsLoaded = true; render(); checkAlerts(); }, fail));
-  if (isAdmin()) memberSubs.push(db.listenColl("directory", q => { const d = {}; q.docs.forEach(x => d[x.id] = x.data); S.dir = d; S.dirLoaded = true; render(); }, e => console.warn(e)));
+  if (isAdmin() || isManager()) memberSubs.push(db.listenColl("directory", q => { const d = {}; q.docs.forEach(x => d[x.id] = Object.assign({ slug: x.id }, x.data)); S.dir = d; S.dirLoaded = true; render(); if (isAdmin()) ensureTeam(); }, e => console.warn(e)));
   memberSubs.push(db.listen("access/" + S.me.email, s => { if (!s.exists) signOutNow("Your PIN was reset. Pick your name to create a new one."); }, () => { }));
 }
 
@@ -486,7 +540,7 @@ function updateTitle() {
 }
 function header() {
   const st = S.me && S.meta ? (isToday() ? "Shuffled " + fmtTime(S.meta.shuffledAt) + (isAdmin() ? " by " + esc(S.meta.shuffledBy || "—") : "") : "<span style='color:var(--amber)'>Not shuffled yet today</span>") : "";
-  const roleLab = S.me ? (ROLE_LABEL[S.me.role] || "") : "";
+  const roleLab = S.me ? titleOf(S.me) : "";
   const live = S.me && S.meta !== undefined && !S.stale;
   return '<div class="top"><div class="brand"><div class="logo"><i></i></div><div>Transfer Queue<div class="sub">' + esc(fmtDate(today())) + (st ? " · " + st : "") + '</div></div></div><div class="spacer"></div>' +
     (S.me ? '<span class="live ' + (live ? "on" : "") + '"><b></b>' + (live ? "Live" : S.stale ? "Reconnecting…" : "Connecting…") + '</span>' : "") +
@@ -589,21 +643,28 @@ function adminView() {
   const t = S.tab;
   const tabs = '<div class="tabs">' + [["board", "Live board"], ["team", "Team, people & PINs"], ["stats", "Today's numbers"]].map(x => '<button class="' + (t === x[0] ? "on" : "") + '" data-act="tab" data-t="' + x[0] + '">' + x[1] + '</button>').join("") + '</div>';
   if (t === "team") return tabs + teamView();
-  if (t === "stats") return tabs + statsView();
+  if (t === "stats") return tabs + spacingCard() + statsView();
   return tabs + '<div class="grid3 mb">' + CALLERS.map(c => listCard(c, "admin")).join("") + '</div><div class="split"><div>' + feedCard(80) + '</div><div>' + offCard() + '</div></div>';
 }
 function managerView() {
-  const t = S.tab === "stats" ? "stats" : "board";
-  const tabs = '<div class="tabs">' + [["board", "Live board"], ["stats", "Today's numbers"]].map(x => '<button class="' + (t === x[0] ? "on" : "") + '" data-act="tab" data-t="' + x[0] + '">' + x[1] + '</button>').join("") + '</div>';
+  const t = S.tab === "stats" || S.tab === "pins" ? S.tab : "board";
+  const tabs = '<div class="tabs">' + [["board", "Live board"], ["pins", "PINs"], ["stats", "Today's numbers"]].map(x => '<button class="' + (t === x[0] ? "on" : "") + '" data-act="tab" data-t="' + x[0] + '">' + x[1] + '</button>').join("") + '</div>';
   if (t === "stats") return tabs + statsView();
+  if (t === "pins") return tabs + pinsView();
   return tabs + '<div class="grid3 mb">' + CALLERS.map(c => listCard(c, "caller")).join("") + '</div><div class="split"><div>' + feedCard(80) + '</div><div>' + offCard() + '</div></div>';
+}
+function pinsView() {
+  const dis = S.busy ? " disabled" : "";
+  const people = dirList("caller").concat(dirList("agent"));
+  return '<div class="card" style="max-width:720px"><div class="card-h"><h3>Reset a forgotten PIN</h3><span class="sub">calling agents and mortgage agents</span></div><div class="card-b sub">The person is signed out and creates a new PIN the next time they type their name.</div><div style="overflow:auto"><table><tbody>' +
+    people.map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td class="sub">' + esc(titleOf(d)) + '</td><td>' + (d.pinSet ? '<span class="tag g">PIN set</span>' : '<span class="tag o">Not signed in yet</span>') + '</td><td style="text-align:right">' + (canResetPin(d) ? '<button class="btn xs" data-act="resetpin" data-slug="' + esc(d.slug) + '"' + dis + '>Reset PIN</button>' : '') + '</td></tr>').join("") + '</tbody></table></div></div>';
 }
 function teamView() {
   const ex = (S.meta && S.meta.extras) || {}, off = offMap(), dis = S.busy ? " disabled" : "", f = S.form;
   const slugOf = d => Object.keys(S.dir).find(k => S.dir[k] === d);
-  const pinCell = d => (d.pinSet ? '<span class="tag g">PIN set</span>' : '<span class="tag o">Not signed in yet</span>') + (d.name !== S.me.name ? ' <button class="btn xs ghost" data-act="resetpin" data-slug="' + slugOf(d) + '"' + dis + '>Reset PIN</button>' : "");
+  const pinCell = d => (d.pinSet ? '<span class="tag g">PIN set</span>' : '<span class="tag o">Not signed in yet</span>') + (canResetPin(d) ? ' <button class="btn xs ghost" data-act="resetpin" data-slug="' + slugOf(d) + '"' + dis + '>Reset PIN</button>' : "");
   const agentRows = dirList("agent").map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td><label class="switch"><input type="checkbox" data-act="off" data-name="' + esc(d.name) + '" ' + (off[d.name] ? "" : "checked") + dis + '><i></i></label> <span class="sub">' + (off[d.name] ? "Off today" : "Working") + '</span></td><td><span class="stepper"><button class="btn xs" data-act="extra" data-name="' + esc(d.name) + '" data-d="-1"' + dis + '>−</button><span>' + (ex[d.name] || 0) + '</span><button class="btn xs" data-act="extra" data-name="' + esc(d.name) + '" data-d="1"' + dis + '>+</button></span></td><td>' + pinCell(d) + '</td><td style="text-align:right"><button class="btn xs ghost" data-act="rmperson" data-slug="' + slugOf(d) + '"' + dis + '>Remove</button></td></tr>').join("");
-  const staffRows = dirList("admin").concat(dirList("manager"), dirList("caller")).map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td class="sub">' + ROLE_LABEL[d.role] + (d.list ? " · " + esc(d.list) + "'s list" : "") + '</td><td>' + pinCell(d) + '</td><td style="text-align:right">' + (d.role !== "admin" ? '<button class="btn xs ghost" data-act="rmperson" data-slug="' + slugOf(d) + '"' + dis + '>Remove</button>' : "") + '</td></tr>').join("");
+  const staffRows = dirList("admin").concat(dirList("manager"), dirList("caller")).map(d => '<tr><td><b>' + esc(d.name) + '</b></td><td class="sub">' + esc(titleOf(d)) + (d.list ? " · " + esc(d.list) + "'s list" : "") + '</td><td>' + pinCell(d) + '</td><td style="text-align:right">' + (d.role !== "admin" ? '<button class="btn xs ghost" data-act="rmperson" data-slug="' + slugOf(d) + '"' + dis + '>Remove</button>' : "") + '</td></tr>').join("");
   const addSpot = '<div class="card mb"><div class="card-h"><h3>Give extra spots today</h3><span class="sub">one-time, for today\'s lists only — e.g. to make up for time off</span></div><div class="card-b"><div class="inline">' +
     '<div class="field" style="flex-basis:100%">Mortgage agents <span class="sub" style="font-weight:500">(tick one or more)</span><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px 12px;padding:6px 0">' + roster().map(n => '<label style="font-weight:600;color:var(--ink);display:flex;gap:6px;align-items:center"><input type="checkbox" data-spotpick="' + esc(n) + '" ' + ((S.form.spotPick || {})[n] ? "checked" : "") + '> ' + esc(n) + (extrasToday(n) ? ' <span class="tag x">+' + extrasToday(n) + '</span>' : '') + '</label>').join("") + '</div><div style="display:flex;gap:8px"><button class="btn xs" data-act="spotall">Select all</button><button class="btn xs ghost" data-act="spotnone">Clear</button><span class="sub" style="align-self:center">' + spotPicked().length + ' selected</span></div></div>' +
     '<label class="field">Where<select class="inp" id="f-spotPos" data-f="spotPos">' + [["random", "Random spot"], ["top", "Top (next up)"], ["bottom", "Bottom"]].map(o => '<option value="' + o[0] + '" ' + ((f.spotPos || "random") === o[0] ? "selected" : "") + '>' + o[1] + '</option>').join("") + '</select></label>' +
@@ -614,11 +675,16 @@ function teamView() {
   const auto = S.meta && S.meta.autoShuffle !== false;
   const addCard = '<div class="card mb"><div class="card-h"><h3>Add someone new</h3></div><div class="card-b"><div style="display:flex;flex-direction:column;gap:10px">' +
     '<label class="field">First and last name<input class="inp" id="f-newName" data-f="newName" placeholder="e.g. Sam Lee" value="' + esc(f.newName || "") + '"></label>' +
-    '<label class="field">Role<select class="inp" id="f-newRole" data-f="newRole">' + [["agent", "Mortgage agent"], ["caller", "Calling agent (gets their own list)"], ["manager", "Manager"]].map(o => '<option value="' + o[0] + '" ' + ((f.newRole || "agent") === o[0] ? "selected" : "") + '>' + o[1] + '</option>').join("") + '</select></label>' +
+    '<label class="field">Role<select class="inp" id="f-newRole" data-f="newRole">' + [["agent", "Mortgage agent"], ["caller", "Calling agent (gets their own list)"], ["manager", "Manager"], ["admin", "Admin (full controls, like the Managing Director)"]].map(o => '<option value="' + o[0] + '" ' + ((f.newRole || "agent") === o[0] ? "selected" : "") + '>' + o[1] + '</option>').join("") + '</select></label>' +
     '<button class="btn dark" data-act="addperson"' + dis + '>Add person</button><div class="sub">They sign in by typing this name and create their own PIN.</div></div></div></div>';
   const side = addCard + '<div class="card mb"><div class="card-h"><h3>Admin, managers & calling agents</h3></div><div style="overflow:auto"><table><tbody>' + staffRows + '</tbody></table></div></div>' +
     '<div class="card"><div class="card-h"><h3>Settings</h3></div><div class="card-b"><div class="pref"><div><b>Auto-shuffle each morning</b><small>If you haven\'t shuffled by the time the first calling agent signs in, the app shuffles for you. You can always reshuffle.</small></div><label class="switch"><input type="checkbox" data-act="autoshuffle" ' + (auto ? "checked" : "") + dis + '><i></i></label></div></div></div>';
   return '<div class="split"><div>' + addSpot + team + '</div><div>' + side + '</div></div>';
+}
+function spacingCard() {
+  const r = spacingReport(startLists(), CALLERS);
+  if (!r.pairs) return "";
+  return '<div class="notice ' + (r.close ? "warn" : "info") + '">Today\'s spacing: ' + (r.close ? r.close + " of " + r.pairs + " are only " + r.worst + " spots apart (" + esc(r.closeList.join(", ")) + "). Everyone else is " + MIN_GAP + "+ apart. With " + roster().length + " agents on " + CALLERS.length + " lists this is the best possible." : "everyone is " + MIN_GAP + "+ spots apart across lists.") + " This is checked at the shuffle; lists drift as calls happen.</div>";
 }
 function statsView() {
   const st = stats(), names = Object.keys(st).sort((a, b) => st[b].t - st[a].t || a.localeCompare(b));
