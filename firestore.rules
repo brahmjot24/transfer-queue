@@ -9,6 +9,7 @@ service cloud.firestore {
     function isMember() { return signedIn() && exists(accessPath()); }
     function myRole() { return get(accessPath()).data.role; }
     function isAdmin() { return isMember() && myRole() == 'admin'; }
+    function isManager() { return isMember() && myRole() == 'manager'; }
     function canOperate() { return isMember() && myRole() in ['admin', 'manager', 'caller']; }
     // Only true during first-time setup, before the admin account exists.
     function booting() { return signedIn() && !exists(/databases/$(database)/documents/config/bootstrap); }
@@ -16,17 +17,21 @@ service cloud.firestore {
     // One entry per person: name, role, sign-in ID. Looked up by name at sign-in; never listed publicly.
     match /directory/{slug} {
       allow get: if true;          // look up one name at sign-in
-      allow list: if isAdmin();    // only the admin can see the whole team
+      allow list: if isAdmin() || isManager();   // admins + managers can see the whole team
       allow create, delete: if isAdmin() || booting();
       allow update: if isAdmin() || booting()
+        // managers may reset PINs for calling + mortgage agents (role can't change)
+        || (isManager() && resource.data.role in ['caller', 'agent'] && request.resource.data.role == resource.data.role)
         || (signedIn() && request.auth.token.email == resource.data.email
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pinSet']));
     }
 
-    // Who is allowed in, and their role. Only the admin manages this.
+    // Who is allowed in, and their role. Admins manage everyone; managers can only reset agents' PINs.
     match /access/{email} {
-      allow read: if signedIn() && (request.auth.token.email == email || isAdmin());
-      allow write: if isAdmin() || booting();
+      allow read: if signedIn() && (request.auth.token.email == email || isAdmin() || isManager());
+      allow create: if isAdmin() || booting() || (isManager() && request.resource.data.role in ['caller', 'agent']);
+      allow update: if isAdmin() || booting();
+      allow delete: if isAdmin() || (isManager() && resource.data.role in ['caller', 'agent']);
     }
 
     match /config/bootstrap {
