@@ -136,7 +136,7 @@ async function logEvent(ev, date) {
   return { coll, id };
 }
 function ensureLogs() {
-  const d = S.meta && S.meta.date; if (!d || d === logDate || !S.me) return;
+  const d = S.meta && S.meta.date; if (!d || d === logDate || !S.me || S.me.role === "agent") return; // mortgage agents don't see activity
   logSubs.forEach(u => u()); logSubs = []; logDate = d; S.log = null; S.adminLog = null;
   logSubs.push(db.listen("logs/" + d, s => { S.log = s.exists ? s.data : { events: {} }; render(); }, e => console.warn(e)));
   if (isAdmin()) logSubs.push(db.listen("adminLogs/" + d, s => { S.adminLog = s.exists ? s.data : { events: {} }; render(); }, e => console.warn(e)));
@@ -627,8 +627,8 @@ function agentView() {
     const n = pos[c], cls = off ? "" : n === 1 ? "next" : n === 2 ? "deck" : "", ahead = n > 1 ? n - 1 : 0;
     return '<div class="spot ' + cls + '"><div class="lab">' + esc(c) + '</div><div class="val">' + (off ? "—" : n ? "#" + n : "—") + '</div><div class="hint">' + (off ? "Off today" : !n ? "Not on this list" : n === 1 ? "You're next" : ahead + " " + (ahead === 1 ? "person" : "people") + " ahead of you") + '</div></div>';
   }).join("");
-  return ban + '<div class="spots">' + spots + '</div><div class="sub mb">Today: <b>' + st.t + '</b> transfer' + (st.t === 1 ? "" : "s") + ' received · <b>' + st.s + '</b> skip' + (st.s === 1 ? "" : "s") + (p.chime && !actx ? ' · <button class="btn xs" data-act="testchime">🔊 Tap to turn on sound</button>' : "") + '</div>' +
-    '<div class="grid3 mb">' + CALLERS.map(c => listCard(c, "view")).join("") + '</div>' + feedCard(40);
+  return ban + '<div class="spots">' + spots + '</div>' + (p.chime && !actx ? '<div class="sub mb"><button class="btn xs" data-act="testchime">🔊 Tap to turn on sound</button></div>' : '') +
+    '<div class="sub">Keep this page open. You\'ll be alerted when you\'re ' + (p.onDeck ? 'on deck (#2) and when you\'re next.' : 'next.') + ' Change how in <b>Alerts</b>.</div>';
 }
 function callerView() {
   const c = myList();
